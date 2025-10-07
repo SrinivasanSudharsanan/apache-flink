@@ -53,6 +53,13 @@ public class CsvSchemaInferrer {
                     for (int i = 0; i < columnsCount; i++) {
                         columnSamples.add(new ArrayList<>());
                     }
+
+                    // Generate column names if no header
+                    if (!hasHeader) {
+                        for (int i = 0; i < columnsCount; i++) {
+                            columnNames.add("col_" + i);
+                        }
+                    }
                 }
 
                 if (lineNumber == 0 && hasHeader) {
@@ -67,14 +74,6 @@ public class CsvSchemaInferrer {
                             columnSamples.get(i).add(fields[i].trim());
                         }
                     }
-
-                    // Generate column names if no header
-                    if (lineNumber == 0 && !hasHeader) {
-                        for (int i = 0; i < columnsCount; i++) {
-                            columnNames.add("col_" + i);
-                        }
-                    }
-
                     dataRowCount++;
                 }
                 lineNumber++;
@@ -100,7 +99,6 @@ public class CsvSchemaInferrer {
         return line.split(",");
     }
 
-    /** Advanced type inference from sample values. */
     private static String inferColumnType(List<String> columnValues) {
         if (columnValues.isEmpty()) {
             return "STRING";
@@ -109,6 +107,9 @@ public class CsvSchemaInferrer {
         int integerCount = 0;
         int doubleCount = 0;
         int booleanCount = 0;
+        int timestampCount = 0;
+        int dateCount = 0;
+        int timeCount = 0;
         int total = 0;
 
         for (String value : columnValues) {
@@ -122,29 +123,129 @@ public class CsvSchemaInferrer {
                 integerCount++;
             }
             // Check if double (but not integer)
-            else if (value.matches("-?\\d*\\.\\d+")) {
+            else if (value.matches("-?\\d*\\.\\d+([eE][-+]?\\d+)?")) {
                 doubleCount++;
             }
-            // Check if boolean
-            else if (value.matches("(?i)true|false")) {
+            // Check if boolean (more patterns)
+            else if (value.matches("(?i)true|false|yes|no|1|0")) {
                 booleanCount++;
             }
+            // Check if timestamp (ISO format)
+            else if (isTimestamp(value)) {
+                timestampCount++;
+                System.out.println("DEBUG: Found TIMESTAMP: " + value);
+            }
+            // Check if date (date only)
+            else if (isDate(value)) {
+                dateCount++;
+                System.out.println("DEBUG: Found DATE: " + value);
+            }
+            // Check if time (time only)
+            else if (isTime(value)) {
+                timeCount++;
+                System.out.println("DEBUG: Found TIME: " + value);
+            }
         }
+
+        // DEBUG: Print counts
+        System.out.println(
+                "DEBUG: Type counts - INT:"
+                        + integerCount
+                        + " DOUBLE:"
+                        + doubleCount
+                        + " BOOL:"
+                        + booleanCount
+                        + " TS:"
+                        + timestampCount
+                        + " DATE:"
+                        + dateCount
+                        + " TIME:"
+                        + timeCount
+                        + " TOTAL:"
+                        + total);
 
         if (total == 0) {
             return "STRING";
         }
-        // // Use majority voting
-        if (integerCount == total) {
+
+        // Use threshold-based detection instead of requiring 100% consistency
+        double threshold = 0.8; // 80% of values must match the type
+
+        if ((double) integerCount / total >= threshold) {
             return "INT";
         }
-        if (doubleCount == total) {
+        if ((double) doubleCount / total >= threshold) {
             return "DOUBLE";
         }
-        if (booleanCount == total) {
+        if ((double) booleanCount / total >= threshold) {
             return "BOOLEAN";
         }
+        if ((double) timestampCount / total >= threshold) {
+            return "TIMESTAMP";
+        }
+        if ((double) dateCount / total >= threshold) {
+            return "DATE";
+        }
+        if ((double) timeCount / total >= threshold) {
+            return "TIME";
+        }
+
         return "STRING";
+    }
+
+    /** Enhanced timestamp detection. */
+    private static boolean isTimestamp(String value) {
+        // Remove surrounding quotes if present
+        String cleaned = value.trim().replaceAll("^\"|\"$", "");
+
+        // ISO timestamp: 2023-01-15 10:30:00 or 2023-01-15T10:30:00
+        if (cleaned.matches("\\d{4}-\\d{2}-\\d{2}[T\\s]\\d{2}:\\d{2}:\\d{2}")) {
+            return true;
+        }
+
+        // Common timestamp formats
+        if (cleaned.matches("\\d{4}-\\d{2}-\\d{2} \\d{2}:\\d{2}:\\d{2}")) {
+            return true;
+        }
+        if (cleaned.matches("\\d{2}/\\d{2}/\\d{4} \\d{2}:\\d{2}:\\d{2}")) {
+            return true;
+        }
+
+        return false;
+    }
+
+    /** Date detection (date part only). */
+    private static boolean isDate(String value) {
+        String cleaned = value.trim().replaceAll("^\"|\"$", "");
+
+        // ISO date: 2023-01-15
+        if (cleaned.matches("\\d{4}-\\d{2}-\\d{2}")) {
+            return true;
+        }
+
+        // Common date formats
+        if (cleaned.matches("\\d{2}/\\d{2}/\\d{4}")) {
+            return true;
+        }
+
+        return false;
+    }
+
+    /** Time detection (time part only). */
+    private static boolean isTime(String value) {
+        String cleaned = value.trim().replaceAll("^\"|\"$", "");
+
+        // ISO time: 10:30:00
+        if (cleaned.matches("\\d{2}:\\d{2}:\\d{2}")) {
+            return true;
+        }
+
+        // Simple time: 10:30
+        if (cleaned.matches("\\d{2}:\\d{2}")) {
+            return true;
+        }
+
+        return false;
     }
 
     /** Result container for inferred schema. */
