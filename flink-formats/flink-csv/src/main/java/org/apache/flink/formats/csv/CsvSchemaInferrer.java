@@ -54,11 +54,12 @@ public class CsvSchemaInferrer {
                         columnSamples.add(new ArrayList<>());
                     }
 
-                    // Generate column names if no header
+                    // FIXED: Generate column names for no-header files
                     if (!hasHeader) {
                         for (int i = 0; i < columnsCount; i++) {
                             columnNames.add("col_" + i);
                         }
+                        System.out.println("DEBUG: Generated " + columnsCount + " column names for no-header file");
                     }
                 }
 
@@ -133,36 +134,16 @@ public class CsvSchemaInferrer {
             // Check if timestamp (ISO format)
             else if (isTimestamp(value)) {
                 timestampCount++;
-                System.out.println("DEBUG: Found TIMESTAMP: " + value);
             }
             // Check if date (date only)
             else if (isDate(value)) {
                 dateCount++;
-                System.out.println("DEBUG: Found DATE: " + value);
             }
             // Check if time (time only)
             else if (isTime(value)) {
                 timeCount++;
-                System.out.println("DEBUG: Found TIME: " + value);
             }
         }
-
-        // DEBUG: Print counts
-        System.out.println(
-                "DEBUG: Type counts - INT:"
-                        + integerCount
-                        + " DOUBLE:"
-                        + doubleCount
-                        + " BOOL:"
-                        + booleanCount
-                        + " TS:"
-                        + timestampCount
-                        + " DATE:"
-                        + dateCount
-                        + " TIME:"
-                        + timeCount
-                        + " TOTAL:"
-                        + total);
 
         if (total == 0) {
             return "STRING";
@@ -285,10 +266,15 @@ public class CsvSchemaInferrer {
     /** Test method. */
     public static void main(String[] args) {
         if (args.length > 0) {
-            SchemaResult result = inferSchema(args[0], true, 100);
+            boolean hasHeader = args.length > 1 ? Boolean.parseBoolean(args[1]) : true;
+            int sampleSize = args.length > 2 ? Integer.parseInt(args[2]) : 100;
+            System.out.println("DEBUG: filePath=" + args[0] + ", hasHeader=" + hasHeader + ", sampleSize=" + sampleSize);
+            SchemaResult result = inferSchema(args[0], hasHeader, sampleSize);
             System.out.println(result);
         } else {
-            System.out.println("Usage: java CsvSchemaInferrer <csv-file>");
+            System.out.println("Usage: java CsvSchemaInferrer <csv-file> [hasHeader] [sampleSize]");
+            System.out.println("  hasHeader: true/false (default: true)");
+            System.out.println("  sampleSize: number of rows to sample (default: 100)");
         }
     }
 }
