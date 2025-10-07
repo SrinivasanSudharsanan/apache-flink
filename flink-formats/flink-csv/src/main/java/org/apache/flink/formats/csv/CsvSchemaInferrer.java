@@ -1,280 +1,494 @@
-/*
- * Licensed to the Apache Software Foundation (ASF) under one.
- * or more contributor license agreements.  See the NOTICE file
- * distributed with this work for additional information.
- * regarding copyright ownership.  The ASF licenses this file
- * to you under the Apache License, Version 2.0 (the
- * "License"); you may not use this file except in compliance.
- * with the License.  You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software.
- * distributed under the License is distributed on an "AS IS" BASIS,.
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and.
- * limitations under the License.
- */
-
 package org.apache.flink.formats.csv;
 
 import java.io.BufferedReader;
 import java.io.FileReader;
 import java.io.IOException;
+import java.io.InputStream;
+import java.io.InputStreamReader;
+import java.io.StringReader;
 import java.util.ArrayList;
 import java.util.List;
 
-/** Core schema inference logic for CSV files. */
+/** Enhanced CSV schema inferrer with improved parsing capabilities. */
 public class CsvSchemaInferrer {
+    private final boolean hasHeader;
+    private final int sampleSize;
+    private final CsvParser parser;
 
-    /**
-     * Infers schema from CSV file by reading header and sampling data rows. Returns column names
-     * and inferred types.
-     */
-    public static SchemaResult inferSchema(String filePath, boolean hasHeader, int sampleSize) {
+    public CsvSchemaInferrer(
+            boolean hasHeader, int sampleSize, char delimiter, boolean allowMultiLine) {
+        this.hasHeader = hasHeader;
+        this.sampleSize = sampleSize;
+        this.parser = new CsvParser(delimiter, true, false, allowMultiLine);
+    }
+
+    /** Infer schema from a CSV file. */
+    public CsvSchema inferSchema(String filePath) throws IOException {
+        System.out.println(
+                "DEBUG: filePath="
+                        + filePath
+                        + ", hasHeader="
+                        + hasHeader
+                        + ", sampleSize="
+                        + sampleSize);
         System.out.println("Inferring schema for: " + filePath);
 
-        List<String> columnNames = new ArrayList<>();
-        List<List<String>> columnSamples = new ArrayList<>();
+        List<String[]> samples = new ArrayList<>();
+        List<String> header = null;
 
         try (BufferedReader reader = new BufferedReader(new FileReader(filePath))) {
             String line;
-            int lineNumber = 0;
-            int dataRowCount = 0;
-            int columnsCount = -1;
+            int linesRead = 0;
+            boolean isFirstLine = true;
 
-            // Read and process each line
-            while ((line = reader.readLine()) != null && dataRowCount < sampleSize) {
-                String[] fields = parseCsvLine(line);
-
-                if (columnsCount == -1) {
-                    // First row - initialize columns
-                    columnsCount = fields.length;
-                    for (int i = 0; i < columnsCount; i++) {
-                        columnSamples.add(new ArrayList<>());
-                    }
-
-                    // FIXED: Generate column names for no-header files
-                    if (!hasHeader) {
-                        for (int i = 0; i < columnsCount; i++) {
-                            columnNames.add("col_" + i);
-                        }
-                        System.out.println("DEBUG: Generated " + columnsCount + " column names for no-header file");
-                    }
+            while ((line = reader.readLine()) != null && linesRead < sampleSize) {
+                // CRITICAL FIX: Only skip completely empty lines when not in multi-line mode
+                // This preserves whitespace-only lines that are part of multi-line fields
+                if (line.isEmpty() && !parser.isInMultiLineState()) {
+                    System.out.println("DEBUG: Skipping completely empty line");
+                    continue;
                 }
 
-                if (lineNumber == 0 && hasHeader) {
-                    // First row is header
-                    for (String field : fields) {
-                        columnNames.add(field.trim());
-                    }
+                String[] fields = parser.parseLine(line, false);
+
+                if (fields == null) {
+                    // Multi-line field, continue reading
+                    System.out.println("DEBUG: Multi-line field continues to next line");
+                    continue;
+                }
+
+                if (isFirstLine && hasHeader) {
+                    header = List.of(fields);
+                    isFirstLine = false;
+                    System.out.println(
+                            "DEBUG: Parsed header with "
+                                    + fields.length
+                                    + " fields: "
+                                    + List.of(fields));
                 } else {
-                    // Data row - sample values for type inference
-                    for (int i = 0; i < Math.min(fields.length, columnsCount); i++) {
-                        if (i < columnSamples.size()) {
-                            columnSamples.get(i).add(fields[i].trim());
-                        }
-                    }
-                    dataRowCount++;
+                    samples.add(fields);
+                    linesRead++;
+                    System.out.println(
+                            "DEBUG: Parsed " + fields.length + " fields: " + List.of(fields));
                 }
-                lineNumber++;
             }
 
-        } catch (IOException e) {
-            System.err.println("Error reading file: " + e.getMessage());
-            return new SchemaResult(List.of("error"), List.of("STRING"));
+            // Handle any pending multi-line record at end of sample - FIXED VERSION
+            String[] finalFields = parser.parseLine(null, true);
+            if (finalFields != null && finalFields.length > 0) {
+                boolean allEmpty = true;
+                for (String f : finalFields) {
+                    if (f != null && !f.isEmpty()) {
+                        allEmpty = false;
+                        break;
+                    }
+                }
+                if (!allEmpty && samples.size() < sampleSize) {
+                    samples.add(finalFields);
+                    System.out.println(
+                            "DEBUG: Parsed final "
+                                    + finalFields.length
+                                    + " fields: "
+                                    + List.of(finalFields));
+                }
+            }
         }
 
-        // Infer types for each column
-        List<String> columnTypes = new ArrayList<>();
-        for (List<String> columnValues : columnSamples) {
-            columnTypes.add(inferColumnType(columnValues));
-        }
-
-        return new SchemaResult(columnNames, columnTypes);
+        CsvSchema schema = analyzeSchema(samples, header);
+        printDetailedAnalysis(schema.getColumns().toArray(new CsvColumn[0]), samples);
+        return schema;
     }
 
-    /** Simple CSV line parser - split by comma, handle basic quotes. */
-    private static String[] parseCsvLine(String line) {
-        // For now, use simple split - we can enhance later
-        return line.split(",");
-    }
+    /** Infer schema from CSV content as a string with proper multi-line support. */
+    public CsvSchema inferSchemaFromString(String csvContent, boolean hasHeader)
+            throws IOException {
+        System.out.println(
+                "DEBUG: Inferring schema from CSV string, hasHeader="
+                        + hasHeader
+                        + ", sampleSize="
+                        + sampleSize);
 
-    private static String inferColumnType(List<String> columnValues) {
-        if (columnValues.isEmpty()) {
-            return "STRING";
+        List<String[]> samples = new ArrayList<>();
+        List<String> header = null;
+
+        try (BufferedReader reader = new BufferedReader(new StringReader(csvContent))) {
+            String line;
+            int linesRead = 0;
+            boolean isFirstLine = true;
+
+            while ((line = reader.readLine()) != null && linesRead < sampleSize) {
+                // CRITICAL FIX: Only skip completely empty lines when not in multi-line mode
+                if (line.isEmpty() && !parser.isInMultiLineState()) {
+                    System.out.println("DEBUG: Skipping completely empty line");
+                    continue;
+                }
+
+                String[] fields = parser.parseLine(line, false);
+
+                if (fields == null) {
+                    // Multi-line field, continue reading
+                    System.out.println("DEBUG: Multi-line field continues to next line");
+                    continue;
+                }
+
+                if (isFirstLine && hasHeader) {
+                    header = List.of(fields);
+                    isFirstLine = false;
+                    System.out.println(
+                            "DEBUG: Parsed header with "
+                                    + fields.length
+                                    + " fields: "
+                                    + List.of(fields));
+                } else {
+                    samples.add(fields);
+                    linesRead++;
+                    System.out.println(
+                            "DEBUG: Parsed " + fields.length + " fields: " + List.of(fields));
+                }
+            }
+
+            // Handle any pending multi-line record at end - FIXED VERSION
+            String[] finalFields = parser.parseLine(null, true);
+            if (finalFields != null && finalFields.length > 0) {
+                boolean allEmpty = true;
+                for (String f : finalFields) {
+                    if (f != null && !f.isEmpty()) {
+                        allEmpty = false;
+                        break;
+                    }
+                }
+                if (!allEmpty && samples.size() < sampleSize) {
+                    samples.add(finalFields);
+                    System.out.println(
+                            "DEBUG: Parsed final "
+                                    + finalFields.length
+                                    + " fields: "
+                                    + List.of(finalFields));
+                }
+            }
         }
 
-        int integerCount = 0;
-        int doubleCount = 0;
-        int booleanCount = 0;
-        int timestampCount = 0;
-        int dateCount = 0;
-        int timeCount = 0;
-        int total = 0;
+        CsvSchema schema = analyzeSchema(samples, header);
+        printDetailedAnalysis(schema.getColumns().toArray(new CsvColumn[0]), samples);
+        return schema;
+    }
 
-        for (String value : columnValues) {
-            if (value == null || value.isEmpty() || value.equals("null")) {
+    /** Infer schema from a list of CSV lines with proper multi-line support. */
+    public CsvSchema inferSchemaFromLines(List<String> csvLines, boolean hasHeader) {
+        System.out.println(
+                "DEBUG: Inferring schema from "
+                        + csvLines.size()
+                        + " lines, hasHeader="
+                        + hasHeader
+                        + ", sampleSize="
+                        + sampleSize);
+
+        List<String[]> samples = new ArrayList<>();
+        List<String> header = null;
+        boolean isFirstLine = true;
+        int linesRead = 0;
+
+        for (String line : csvLines) {
+            if (linesRead >= sampleSize) {
+                break;
+            }
+
+            // CRITICAL FIX: Only skip completely empty lines when not in multi-line mode
+            if ((line == null || line.isEmpty()) && !parser.isInMultiLineState()) {
+                System.out.println("DEBUG: Skipping completely empty line");
                 continue;
             }
-            total++;
 
-            // Check if integer
-            if (value.matches("-?\\d+")) {
-                integerCount++;
+            String[] fields = parser.parseLine(line, false);
+            if (fields == null) {
+                // Multi-line field, continue reading
+                System.out.println("DEBUG: Multi-line field continues to next line");
+                continue;
             }
-            // Check if double (but not integer)
-            else if (value.matches("-?\\d*\\.\\d+([eE][-+]?\\d+)?")) {
-                doubleCount++;
-            }
-            // Check if boolean (more patterns)
-            else if (value.matches("(?i)true|false|yes|no|1|0")) {
-                booleanCount++;
-            }
-            // Check if timestamp (ISO format)
-            else if (isTimestamp(value)) {
-                timestampCount++;
-            }
-            // Check if date (date only)
-            else if (isDate(value)) {
-                dateCount++;
-            }
-            // Check if time (time only)
-            else if (isTime(value)) {
-                timeCount++;
+
+            if (isFirstLine && hasHeader) {
+                header = List.of(fields);
+                isFirstLine = false;
+                System.out.println(
+                        "DEBUG: Parsed header with "
+                                + fields.length
+                                + " fields: "
+                                + List.of(fields));
+            } else {
+                samples.add(fields);
+                linesRead++;
+                System.out.println(
+                        "DEBUG: Parsed " + fields.length + " fields: " + List.of(fields));
             }
         }
 
-        if (total == 0) {
-            return "STRING";
+        // Handle any pending multi-line record at end - FIXED VERSION
+        String[] finalFields = parser.parseLine(null, true);
+        if (finalFields != null && finalFields.length > 0) {
+            boolean allEmpty = true;
+            for (String f : finalFields) {
+                if (f != null && !f.isEmpty()) {
+                    allEmpty = false;
+                    break;
+                }
+            }
+            if (!allEmpty && samples.size() < sampleSize) {
+                samples.add(finalFields);
+                System.out.println(
+                        "DEBUG: Parsed final "
+                                + finalFields.length
+                                + " fields: "
+                                + List.of(finalFields));
+            }
         }
 
-        // Use threshold-based detection instead of requiring 100% consistency
-        double threshold = 0.8; // 80% of values must match the type
-
-        if ((double) integerCount / total >= threshold) {
-            return "INT";
-        }
-        if ((double) doubleCount / total >= threshold) {
-            return "DOUBLE";
-        }
-        if ((double) booleanCount / total >= threshold) {
-            return "BOOLEAN";
-        }
-        if ((double) timestampCount / total >= threshold) {
-            return "TIMESTAMP";
-        }
-        if ((double) dateCount / total >= threshold) {
-            return "DATE";
-        }
-        if ((double) timeCount / total >= threshold) {
-            return "TIME";
-        }
-
-        return "STRING";
+        CsvSchema schema = analyzeSchema(samples, header);
+        printDetailedAnalysis(schema.getColumns().toArray(new CsvColumn[0]), samples);
+        return schema;
     }
 
-    /** Enhanced timestamp detection. */
-    private static boolean isTimestamp(String value) {
-        // Remove surrounding quotes if present
-        String cleaned = value.trim().replaceAll("^\"|\"$", "");
+    /** Infer schema from InputStream with proper multi-line support. */
+    public CsvSchema inferSchemaFromStream(InputStream inputStream, boolean hasHeader)
+            throws IOException {
+        System.out.println(
+                "DEBUG: Inferring schema from InputStream, hasHeader="
+                        + hasHeader
+                        + ", sampleSize="
+                        + sampleSize);
 
-        // ISO timestamp: 2023-01-15 10:30:00 or 2023-01-15T10:30:00
-        if (cleaned.matches("\\d{4}-\\d{2}-\\d{2}[T\\s]\\d{2}:\\d{2}:\\d{2}")) {
-            return true;
-        }
+        List<String[]> samples = new ArrayList<>();
+        List<String> header = null;
 
-        // Common timestamp formats
-        if (cleaned.matches("\\d{4}-\\d{2}-\\d{2} \\d{2}:\\d{2}:\\d{2}")) {
-            return true;
-        }
-        if (cleaned.matches("\\d{2}/\\d{2}/\\d{4} \\d{2}:\\d{2}:\\d{2}")) {
-            return true;
-        }
+        try (BufferedReader reader = new BufferedReader(new InputStreamReader(inputStream))) {
+            String line;
+            int linesRead = 0;
+            boolean isFirstLine = true;
 
-        return false;
-    }
+            while ((line = reader.readLine()) != null && linesRead < sampleSize) {
+                // CRITICAL FIX: Only skip completely empty lines when not in multi-line mode
+                if (line.isEmpty() && !parser.isInMultiLineState()) {
+                    System.out.println("DEBUG: Skipping completely empty line");
+                    continue;
+                }
 
-    /** Date detection (date part only). */
-    private static boolean isDate(String value) {
-        String cleaned = value.trim().replaceAll("^\"|\"$", "");
+                String[] fields = parser.parseLine(line, false);
 
-        // ISO date: 2023-01-15
-        if (cleaned.matches("\\d{4}-\\d{2}-\\d{2}")) {
-            return true;
-        }
+                if (fields == null) {
+                    // Multi-line field, continue reading
+                    System.out.println("DEBUG: Multi-line field continues to next line");
+                    continue;
+                }
 
-        // Common date formats
-        if (cleaned.matches("\\d{2}/\\d{2}/\\d{4}")) {
-            return true;
-        }
-
-        return false;
-    }
-
-    /** Time detection (time part only). */
-    private static boolean isTime(String value) {
-        String cleaned = value.trim().replaceAll("^\"|\"$", "");
-
-        // ISO time: 10:30:00
-        if (cleaned.matches("\\d{2}:\\d{2}:\\d{2}")) {
-            return true;
-        }
-
-        // Simple time: 10:30
-        if (cleaned.matches("\\d{2}:\\d{2}")) {
-            return true;
-        }
-
-        return false;
-    }
-
-    /** Result container for inferred schema. */
-    public static class SchemaResult {
-        private final List<String> columnNames;
-        private final List<String> columnTypes;
-
-        public SchemaResult(List<String> columnNames, List<String> columnTypes) {
-            this.columnNames = columnNames;
-            this.columnTypes = columnTypes;
-        }
-
-        public List<String> getColumnNames() {
-            return columnNames;
-        }
-
-        public List<String> getColumnTypes() {
-            return columnTypes;
-        }
-
-        @Override
-        public String toString() {
-            StringBuilder sb = new StringBuilder();
-            sb.append("Inferred Schema:\n");
-            int minSize = Math.min(columnNames.size(), columnTypes.size());
-            for (int i = 0; i < minSize; i++) {
-                sb.append("  ")
-                        .append(columnNames.get(i))
-                        .append(" : ")
-                        .append(columnTypes.get(i))
-                        .append("\n");
+                if (isFirstLine && hasHeader) {
+                    header = List.of(fields);
+                    isFirstLine = false;
+                    System.out.println(
+                            "DEBUG: Parsed header with "
+                                    + fields.length
+                                    + " fields: "
+                                    + List.of(fields));
+                } else {
+                    samples.add(fields);
+                    linesRead++;
+                    System.out.println(
+                            "DEBUG: Parsed " + fields.length + " fields: " + List.of(fields));
+                }
             }
-            return sb.toString();
+
+            // Handle any pending multi-line record at end - FIXED VERSION
+            String[] finalFields = parser.parseLine(null, true);
+            if (finalFields != null && finalFields.length > 0) {
+                boolean allEmpty = true;
+                for (String f : finalFields) {
+                    if (f != null && !f.isEmpty()) {
+                        allEmpty = false;
+                        break;
+                    }
+                }
+                if (!allEmpty && samples.size() < sampleSize) {
+                    samples.add(finalFields);
+                    System.out.println(
+                            "DEBUG: Parsed final "
+                                    + finalFields.length
+                                    + " fields: "
+                                    + List.of(finalFields));
+                }
+            }
+        }
+
+        CsvSchema schema = analyzeSchema(samples, header);
+        printDetailedAnalysis(schema.getColumns().toArray(new CsvColumn[0]), samples);
+        return schema;
+    }
+
+    private CsvSchema analyzeSchema(List<String[]> samples, List<String> header) {
+        if (samples.isEmpty()) {
+            throw new IllegalArgumentException("No data samples found to infer schema");
+        }
+
+        int columnCount = samples.get(0).length;
+        CsvColumn[] columns = new CsvColumn[columnCount];
+
+        // Initialize columns
+        for (int i = 0; i < columnCount; i++) {
+            String columnName =
+                    (header != null && i < header.size()) ? header.get(i) : "field_" + i;
+            columns[i] = new CsvColumn(columnName);
+        }
+
+        // Analyze each sample
+        for (String[] sample : samples) {
+            if (sample.length != columnCount) {
+                System.err.println(
+                        "WARNING: Inconsistent column count. Expected "
+                                + columnCount
+                                + ", got "
+                                + sample.length
+                                + " in row: "
+                                + List.of(sample));
+                continue;
+            }
+
+            for (int i = 0; i < columnCount; i++) {
+                columns[i].analyzeValue(sample[i]);
+            }
+        }
+
+        // Build schema
+        CsvSchema schema = new CsvSchema();
+        for (CsvColumn column : columns) {
+            schema.addColumn(column);
+        }
+
+        return schema;
+    }
+
+    /** Method for detailed type analysis. */
+    private void printDetailedAnalysis(CsvColumn[] columns, List<String[]> samples) {
+        System.out.println("\nDetailed Type Analysis:");
+        System.out.println("=" + "=".repeat(100));
+
+        for (int i = 0; i < columns.length; i++) {
+            CsvColumn col = columns[i];
+            System.out.printf("Column %d: %s%n", i, col.getName());
+            System.out.printf("  Final Type: %s%n", col.getInferredType());
+            System.out.printf(
+                    "  Compatible with: [INT:%-5s DOUBLE:%-5s BOOLEAN:%-5s DATE:%-5s TIME:%-5s TIMESTAMP:%-5s]%n",
+                    col.hasSeenInteger(),
+                    col.hasSeenDouble(),
+                    col.hasSeenBoolean(),
+                    col.hasSeenDate(),
+                    col.hasSeenTime(),
+                    col.hasSeenTimestamp());
+            System.out.printf("  Non-null values: %d%n", col.getNonNullCount());
+
+            // Show sample values for this column
+            System.out.print("  Sample values: ");
+            int samplesShown = 0;
+            for (String[] sample : samples) {
+                if (i < sample.length && samplesShown < 3) {
+                    System.out.print("[" + sample[i] + "] ");
+                    samplesShown++;
+                }
+            }
+            System.out.println("\n" + "-".repeat(80));
         }
     }
 
-    /** Test method. */
     public static void main(String[] args) {
-        if (args.length > 0) {
-            boolean hasHeader = args.length > 1 ? Boolean.parseBoolean(args[1]) : true;
-            int sampleSize = args.length > 2 ? Integer.parseInt(args[2]) : 100;
-            System.out.println("DEBUG: filePath=" + args[0] + ", hasHeader=" + hasHeader + ", sampleSize=" + sampleSize);
-            SchemaResult result = inferSchema(args[0], hasHeader, sampleSize);
-            System.out.println(result);
-        } else {
-            System.out.println("Usage: java CsvSchemaInferrer <csv-file> [hasHeader] [sampleSize]");
-            System.out.println("  hasHeader: true/false (default: true)");
-            System.out.println("  sampleSize: number of rows to sample (default: 100)");
+        if (args.length == 0) {
+            printUsage();
+            System.exit(1);
+        }
+
+        // Test edge case functionality - check if this is the first argument
+        if (args[0].equals("--test-edge-cases")) {
+            testAllEdgeCases();
+            return;
+        }
+
+        if (args.length < 3) {
+            printUsage();
+            System.exit(1);
+        }
+
+        String filePath = args[0];
+        boolean hasHeader = Boolean.parseBoolean(args[1]);
+        int sampleSize = Integer.parseInt(args[2]);
+        char delimiter = args.length > 3 ? args[3].charAt(0) : ',';
+        boolean allowMultiLine = args.length > 4 ? Boolean.parseBoolean(args[4]) : false;
+
+        try {
+            CsvSchemaInferrer inferrer =
+                    new CsvSchemaInferrer(hasHeader, sampleSize, delimiter, allowMultiLine);
+            CsvSchema schema = inferrer.inferSchema(filePath);
+            System.out.println("Inferred Schema:");
+            System.out.println(schema);
+
+            System.out.println("\nParser Statistics:");
+            System.out.println("  Lines processed: " + inferrer.parser.getLinesProcessed());
+            System.out.println("  Fields processed: " + inferrer.parser.getFieldsProcessed());
+            System.out.println("  Multi-line state: " + inferrer.parser.isInMultiLineState());
+
+        } catch (Exception e) {
+            System.err.println("Error inferring schema: " + e.getMessage());
+            e.printStackTrace();
+            System.exit(1);
+        }
+    }
+
+    private static void printUsage() {
+        System.err.println(
+                "Usage: CsvSchemaInferrer <filePath> <hasHeader> <sampleSize> [delimiter] [allowMultiLine]");
+        System.err.println("  filePath: Path to CSV file");
+        System.err.println("  hasHeader: true/false whether first line is header");
+        System.err.println("  sampleSize: Number of rows to sample");
+        System.err.println("  delimiter: (Optional) Field delimiter character, default ','");
+        System.err.println(
+                "  allowMultiLine: (Optional) true/false whether to handle multi-line fields, default false");
+        System.err.println("");
+        System.err.println("Alternative usage for testing:");
+        System.err.println("  CsvSchemaInferrer --test-edge-cases");
+    }
+
+    /** Test all edge cases functionality. */
+    private static void testAllEdgeCases() {
+        try {
+            CsvSchemaInferrer inferrer = new CsvSchemaInferrer(true, 10, ',', true);
+
+            // Test 1: Trailing empty columns
+            System.out.println("=== Test 1: Trailing Empty Columns ===");
+            String trailingEmpty = "id,name,age,\n1,John,30,\n2,Jane,25,";
+            CsvSchema schema1 = inferrer.inferSchemaFromString(trailingEmpty, true);
+            System.out.println(
+                    "Columns detected: " + schema1.getColumns().size() + " (should be 4)");
+
+            inferrer.parser.reset();
+
+            // Test 2: Multi-line field preservation
+            System.out.println("\n=== Test 2: Multi-line Field Preservation ===");
+            String multiLine = "id,description\n1,\"Line 1\nLine 2\"\n2,\"Single line\"";
+            CsvSchema schema2 = inferrer.inferSchemaFromString(multiLine, true);
+
+            inferrer.parser.reset();
+
+            // Test 3: Mixed empty columns
+            System.out.println("\n=== Test 3: Mixed Empty Columns ===");
+            String mixedEmpty = "a,b,c,d\n1,,3,\n,2,,4";
+            CsvSchema schema3 = inferrer.inferSchemaFromString(mixedEmpty, true);
+            System.out.println(
+                    "Columns detected: " + schema3.getColumns().size() + " (should be 4)");
+
+            inferrer.parser.reset();
+
+            // Test 4: Empty lines in multi-line fields
+            System.out.println("\n=== Test 4: Empty Lines in Multi-line Fields ===");
+            String emptyLineMultiLine = "id,text\n1,\"First line\n\nThird line\"\n2,\"Normal\"";
+            CsvSchema schema4 = inferrer.inferSchemaFromString(emptyLineMultiLine, true);
+
+        } catch (Exception e) {
+            System.err.println("Edge case tests failed: " + e.getMessage());
+            e.printStackTrace();
         }
     }
 }
