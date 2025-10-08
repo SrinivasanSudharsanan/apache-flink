@@ -26,4 +26,16 @@ public class CsvSchema {
         }
         return sb.toString();
     }
+
+    public String toSqlDdl() {
+        StringBuilder ddl = new StringBuilder();
+        for (int i = 0; i < columns.size(); i++) {
+            CsvColumn column = columns.get(i);
+            ddl.append("  ").append(column.getName()).append(" ").append(column.getInferredType());
+            if (i < columns.size() - 1) {
+                ddl.append(",\n");
+            }
+        }
+        return ddl.toString();
+    }
 }

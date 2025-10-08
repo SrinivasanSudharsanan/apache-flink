@@ -4,7 +4,7 @@ import java.util.ArrayList;
 import java.util.List;
 
 /**
- * Enhanced CSV parser with support for multi-line fields. custom delimiters, and performance
+ * Enhanced CSV parser with support for multi-line fields, custom delimiters, and performance
  * optimizations.
  */
 public class CsvParser {

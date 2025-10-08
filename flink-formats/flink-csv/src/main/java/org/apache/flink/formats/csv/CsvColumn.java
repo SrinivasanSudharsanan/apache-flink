@@ -26,7 +26,7 @@ public class CsvColumn {
                     "^\\d{4}-\\d{2}-\\d{2}[T ]\\d{2}:\\d{2}:\\d{2}(?:\\.\\d{1,9})?([Z]|[+-]\\d{2}:?\\d{2})?$");
 
     // Common formatters
-    private static final DateTimeFormatter[] DATE_FORMATTERS = {
+    public static final DateTimeFormatter[] DATE_FORMATTERS = {
         DateTimeFormatter.ISO_LOCAL_DATE,
         DateTimeFormatter.ofPattern("yyyy-MM-dd"),
         DateTimeFormatter.ofPattern("MM/dd/yyyy"),
@@ -34,14 +34,14 @@ public class CsvColumn {
         DateTimeFormatter.ofPattern("yyyy/MM/dd")
     };
 
-    private static final DateTimeFormatter[] TIME_FORMATTERS = {
+    public static final DateTimeFormatter[] TIME_FORMATTERS = {
         DateTimeFormatter.ISO_LOCAL_TIME,
         DateTimeFormatter.ofPattern("HH:mm:ss"),
         DateTimeFormatter.ofPattern("HH:mm:ss.SSS"),
         DateTimeFormatter.ofPattern("HH:mm")
     };
 
-    private static final DateTimeFormatter[] TIMESTAMP_FORMATTERS = {
+    public static final DateTimeFormatter[] TIMESTAMP_FORMATTERS = {
         DateTimeFormatter.ISO_LOCAL_DATE_TIME,
         DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss"),
         DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss.SSS"),
