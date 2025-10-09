@@ -1,3 +1,21 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
 package org.apache.flink.formats.csv;
 
 import java.time.LocalDate;
@@ -9,6 +27,7 @@ import java.util.regex.Pattern;
 
 public class CsvColumn {
     private final String name;
+    private final boolean strictMode;
     private boolean seenInteger = true;
     private boolean seenDouble = true;
     private boolean seenBoolean = true;
@@ -52,7 +71,12 @@ public class CsvColumn {
     };
 
     public CsvColumn(String name) {
+        this(name, false);
+    }
+
+    public CsvColumn(String name, boolean strictMode) {
         this.name = name;
+        this.strictMode = strictMode;
     }
 
     public void analyzeValue(String value) {
@@ -73,6 +97,9 @@ public class CsvColumn {
                     || "no".equals(lower)
                     || "1".equals(lower)
                     || "0".equals(lower))) {
+                if (strictMode && nonNullCount > 1) {
+                    throw new CsvTypeInferenceException(name, "BOOLEAN", value);
+                }
                 seenBoolean = false;
             }
         }
@@ -82,6 +109,9 @@ public class CsvColumn {
             try {
                 Long.parseLong(value);
             } catch (NumberFormatException e) {
+                if (strictMode && nonNullCount > 1) {
+                    throw new CsvTypeInferenceException(name, "INTEGER", value);
+                }
                 seenInteger = false;
             }
         }
@@ -91,6 +121,9 @@ public class CsvColumn {
             try {
                 Double.parseDouble(value);
             } catch (NumberFormatException e) {
+                if (strictMode && nonNullCount > 1) {
+                    throw new CsvTypeInferenceException(name, "DOUBLE", value);
+                }
                 seenDouble = false;
             }
         }
@@ -98,26 +131,33 @@ public class CsvColumn {
         // Check if it's a date
         if (seenDate) {
             seenDate = isDate(value);
+            if (strictMode && !seenDate && nonNullCount > 1) {
+                throw new CsvTypeInferenceException(name, "DATE", value);
+            }
         }
 
         // Check if it's a time
         if (seenTime) {
             seenTime = isTime(value);
+            if (strictMode && !seenTime && nonNullCount > 1) {
+                throw new CsvTypeInferenceException(name, "TIME", value);
+            }
         }
 
         // Check if it's a timestamp
         if (seenTimestamp) {
             seenTimestamp = isTimestamp(value);
+            if (strictMode && !seenTimestamp && nonNullCount > 1) {
+                throw new CsvTypeInferenceException(name, "TIMESTAMP", value);
+            }
         }
     }
 
     private boolean isDate(String value) {
-        // Quick pattern check first
         if (!DATE_PATTERN.matcher(value).matches()) {
             return false;
         }
 
-        // Try parsing with various formatters
         for (DateTimeFormatter formatter : DATE_FORMATTERS) {
             try {
                 LocalDate.parse(value, formatter);
@@ -130,12 +170,10 @@ public class CsvColumn {
     }
 
     private boolean isTime(String value) {
-        // Quick pattern check first
         if (!TIME_PATTERN.matcher(value).matches()) {
             return false;
         }
 
-        // Try parsing with various formatters
         for (DateTimeFormatter formatter : TIME_FORMATTERS) {
             try {
                 LocalTime.parse(value, formatter);
@@ -148,12 +186,10 @@ public class CsvColumn {
     }
 
     private boolean isTimestamp(String value) {
-        // Quick pattern check first
         if (!TIMESTAMP_PATTERN.matcher(value).matches()) {
             return false;
         }
 
-        // Try parsing with various formatters
         for (DateTimeFormatter formatter : TIMESTAMP_FORMATTERS) {
             try {
                 LocalDateTime.parse(value, formatter);
@@ -197,7 +233,6 @@ public class CsvColumn {
     }
 
     // Getters for debugging
-
     public boolean hasSeenInteger() {
         return seenInteger;
     }
@@ -224,5 +259,9 @@ public class CsvColumn {
 
     public int getNonNullCount() {
         return nonNullCount;
+    }
+
+    public boolean isStrictMode() {
+        return strictMode;
     }
 }

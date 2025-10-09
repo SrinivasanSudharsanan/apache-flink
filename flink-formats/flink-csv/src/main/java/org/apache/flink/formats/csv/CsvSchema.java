@@ -38,4 +38,9 @@ public class CsvSchema {
         }
         return ddl.toString();
     }
+
+    public boolean hasHeader() {
+        // Implement based on your header detection logic
+        return !columns.isEmpty() && !columns.get(0).getName().startsWith("field_");
+    }
 }

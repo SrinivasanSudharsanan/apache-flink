@@ -56,9 +56,10 @@ public class CsvSchemaInferenceFormatFactory implements BulkReaderFormatFactory 
     public BulkDecodingFormat<RowData> createDecodingFormat(
             DynamicTableFactory.Context context, ReadableConfig formatOptions) {
 
-        // Return the existing CSV format implementation
-        // This provides immediate functionality while schema inference
-        // can be integrated as a future enhancement
-        return new CsvFileFormatFactory.CsvBulkDecodingFormat(formatOptions);
+        // For now, throw clear exception since new file source API is complex
+        // Users can use the traditional TableSource approach for batch processing
+        throw new UnsupportedOperationException(
+                "CSV schema inference for new file source API is not yet implemented. "
+                        + "Please use 'csv-inferring' connector with traditional TableSource API for batch processing.");
     }
 }
